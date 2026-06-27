@@ -12,6 +12,9 @@ packages/*/dist-firefox/
 # Environment
 .env
 
+# Harness run artifacts (local init only)
+.harness/
+
 # Editor files
 .vscode/
 .zed/

@@ -1,0 +1,32 @@
+---
+description: Cursor rule pack generated from Harness grounding
+alwaysApply: true
+---
+
+# Cursor Harness Rules
+
+> Cursor-private rules complement the root truth layer; they do not replace it.
+
+## Grounding Summary
+
+- shape: monorepo · languages: typescript, javascript · frameworks: node (TUI/CLI agent harness) · commands: build, check, test, clean · stack: node · aiTraces: AGENTS.md
+
+## Recommended Files
+
+| Path | Purpose |
+| --- | --- |
+| AGENTS.md | Upstream agent protocol and development rules |
+| CONTRIBUTING.md | Contributor gate and PR expectations |
+| packages/coding-agent/README.md | Product CLI/SDK documentation |
+| steering/*.md | Local overrides (only when project-specific) |
+| .cursor/commands/harness-init.md | Cursor entry point: `/harness-init` |
+
+## Harness Cursor Guidance
+
+> HARNESS Cursor adapter block
+Read `AGENTS.md` and `CONTRIBUTING.md` before applying Cursor-private rules.
+Harness is initialized only via `/harness-init` inside the IDE; never instruct the user to run terminal `harness` commands.
+The agent orchestrates grounding, read, judge & draft, one yes/no confirm, and apply. It does not require Node/npm/npx/tsx or `.harness/runs/` artifacts for user onboarding.
+On user `yes`, freeze the Confirmed_Write_Set and write only those files.
+Default to incremental merge (`patch-section`) so existing upstream content is preserved.
+Do not treat this clone's `PI-学习指南.md` as upstream pi authority.

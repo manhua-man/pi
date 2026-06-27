@@ -160,3 +160,23 @@ Attribution:
 ## User Override
 
 If the user's instructions conflict with any rule in this document, ask for explicit confirmation before overriding. Only then execute their instructions.
+
+## AI Assistant Tool Index
+
+> HARNESS_DYNAMIC skill index block
+
+No repo-root Agent Skills (`.claude/skills/`, `.codex/skills/`, `.pi/skills/`). Runtime skills are user-global under `~/.pi/agent/skills/`; see `packages/coding-agent/docs/skills.md`.
+
+Test-only fixtures: `packages/coding-agent/test/fixtures/skills/` (vitest, not product skills).
+
+Example extension skill: `packages/coding-agent/examples/extensions/dynamic-resources/SKILL.md`.
+
+## Detailed Rule Files
+
+| Topic | File | Scope |
+| --- | --- | --- |
+| Agent rules (upstream) | AGENTS.md | protocol + development |
+| Contributing gate | CONTRIBUTING.md | issues/PRs |
+| Coding agent product | packages/coding-agent/README.md | CLI/SDK |
+| TUI themes | packages/coding-agent/docs/themes.md | visual |
+| Local learning notes | PI-学习指南.md | non-upstream reference |
