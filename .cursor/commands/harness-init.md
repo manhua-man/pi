@@ -21,6 +21,6 @@ Do not require `.harness/runs/` artifacts or TypeScript maintainer scripts for t
 
 Apply only after the user explicitly confirms in chat. Do not show file-level Plan internals unless the user asks. If the user declines, leave target configuration files unchanged.
 
-## Upstream Note
+## Fork Note
 
-This repository follows upstream pi convention: `AGENTS.md` is the sole agent protocol file. Do not create `CLAUDE.md` unless the user explicitly requests a split truth layer.
+This fork (`manhua-man/pi`) uses harness 事/法/设: `AGENTS.md` (facts + upstream rules), `CLAUDE.md` (protocol), `DESIGN.md` (TUI design). Upstream `earendil-works/pi` may differ.

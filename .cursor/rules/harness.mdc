@@ -15,7 +15,9 @@ alwaysApply: true
 
 | Path | Purpose |
 | --- | --- |
-| AGENTS.md | Upstream agent protocol and development rules |
+| AGENTS.md | 事 · Facts + upstream development rules |
+| CLAUDE.md | 法 · Collaboration protocol |
+| DESIGN.md | 设 · TUI / theme design entry |
 | CONTRIBUTING.md | Contributor gate and PR expectations |
 | packages/coding-agent/README.md | Product CLI/SDK documentation |
 | steering/*.md | Local overrides (only when project-specific) |

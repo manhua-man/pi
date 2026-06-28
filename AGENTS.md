@@ -161,6 +161,18 @@ Attribution:
 
 If the user's instructions conflict with any rule in this document, ask for explicit confirmation before overriding. Only then execute their instructions.
 
+## Project Overview（事 · Facts）
+
+> HARNESS project-overview block
+
+- **Name**: pi-monorepo（fork: `manhua-man/pi`，upstream: `earendil-works/pi`）
+- **Type**: npm workspaces monorepo，Node >= 22.19，TypeScript (ESM)
+- **Packages**: `pi-ai`, `pi-agent-core`, `pi-tui`, `pi-coding-agent`（见根 `README.md`）
+- **Commands**: `npm run build|check|test|clean`；`./test.sh`；`./pi-test.sh`
+- **Product**: 终端 Coding Agent CLI + SDK（[pi.dev](https://pi.dev)）
+
+下文 **Development Rules** 等为上游维护的协作/开发规则； harness **法** 层见 `CLAUDE.md`，**设** 层见 `DESIGN.md`。
+
 ## AI Assistant Tool Index
 
 > HARNESS_DYNAMIC skill index block
@@ -175,8 +187,10 @@ Example extension skill: `packages/coding-agent/examples/extensions/dynamic-reso
 
 | Topic | File | Scope |
 | --- | --- | --- |
-| Agent rules (upstream) | AGENTS.md | protocol + development |
+| 事 · Facts | AGENTS.md | 本文件（含上游 Development Rules） |
+| 法 · Protocol | CLAUDE.md | 协作协议与冲突处理 |
+| 设 · Design | DESIGN.md | TUI / 主题入口 |
 | Contributing gate | CONTRIBUTING.md | issues/PRs |
 | Coding agent product | packages/coding-agent/README.md | CLI/SDK |
-| TUI themes | packages/coding-agent/docs/themes.md | visual |
-| Local learning notes | PI-学习指南.md | non-upstream reference |
+| TUI themes（细则） | packages/coding-agent/docs/themes.md | token 与加载路径 |
+| Local learning notes | PI-学习指南.md | fork 学习笔记，非上游 |
