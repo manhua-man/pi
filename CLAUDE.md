@@ -36,6 +36,7 @@
 - 核心保持最小；新能力优先 Extension / Skill / Package，见 `CONTRIBUTING.md`。
 - 改代码后（非纯文档）：`npm run check`；测试用 `./test.sh`，见 `AGENTS.md` Commands。
 - 勿在未获用户要求时 `git add -A`、force push 或 `git reset --hard`（多 session 并行，见 `AGENTS.md` Git）。
+- **本 fork 默认用 `-nc` 跑 pi**：`scripts/pi-learn.ps1` / `scripts/pi-learn.sh` 已内置，避免自动加载本仓 `AGENTS.md`/`CLAUDE.md`；需协作规则时用 `-WithContext` 或 `pi-test.sh`。
 - 本 fork 学习笔记 `PI-学习指南.md` 非上游权威；上游行为以 `upstream` 与官方文档为准。
 
 ## Harness Collaboration

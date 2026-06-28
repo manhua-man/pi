@@ -332,8 +332,41 @@ pi --fork <id>         # 从已有 Session 分叉
 cd F:\AIInfra\pi
 npm install --ignore-scripts
 npm run build
-.\pi-test.sh          # 从源码运行 pi，可在任意目录调用
+.\scripts\pi-learn.ps1    # fork 默认：带 -nc，不自动加载 AGENTS/CLAUDE
 ```
+
+### 11.5 Fork 默认：`-nc`（不加载上下文文件）
+
+本 fork 在 `AGENTS.md` / `CLAUDE.md` 上叠了 harness 事/法/设。为避免 pi 运行时**自动注入**这些协作规则、干扰「读源码学架构」，**默认用 `-nc`**。
+
+| 标志 | 作用 |
+|------|------|
+| `-nc` / `--no-context-files` | 不自动加载 `AGENTS.md`、`CLAUDE.md`（pi 官方开关） |
+| 默认包装脚本 | `scripts/pi-learn.ps1`（Windows）、`scripts/pi-learn.sh`（Git Bash）已内置 `-nc` |
+
+**默认（推荐学习 pi 内核）：**
+
+```powershell
+.\scripts\pi-learn.ps1 -p "Explain agent-loop.ts briefly"
+.\scripts\pi-learn.ps1              # 交互 TUI，同样 -nc
+```
+
+```bash
+./scripts/pi-learn.sh -p "List packages/coding-agent/src/core/tools"
+```
+
+**需要加载 fork 协作规则时（显式 opt-in）：**
+
+```powershell
+.\scripts\pi-learn.ps1 -WithContext -p "按 CLAUDE.md 协作规范回答"
+.\pi-test.sh -p "..."               # 等价于不用 -nc
+```
+
+**说明：**
+
+- `-nc` 只关 context files；**不关** skills、extensions、`.pi/` 下配置。
+- `DESIGN.md` 本就不会被 pi 自动加载；需要时让 agent `read` 或你在 Cursor 里 @ 引用。
+- 全局安装的 `pi` 命令：在 fork 目录下手动加 `-nc`，或用上述包装脚本。
 
 ### 11.3 测试
 
@@ -358,7 +391,7 @@ Windows 专项：`packages/coding-agent/docs/windows.md`
 
 ### 阶段 1：跑起来，感受产品
 
-1. 构建并运行 `.\pi-test.sh`
+1. 构建并运行 `.\scripts\pi-learn.ps1`（默认 `-nc`）
 2. 配置 `ANTHROPIC_API_KEY` 或 `/login`
 3. 试 `/tree`、`/compact`、`/export`、`/model`
 

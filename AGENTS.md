@@ -170,6 +170,7 @@ If the user's instructions conflict with any rule in this document, ask for expl
 - **Packages**: `pi-ai`, `pi-agent-core`, `pi-tui`, `pi-coding-agent`（见根 `README.md`）
 - **Commands**: `npm run build|check|test|clean`；`./test.sh`；`./pi-test.sh`
 - **Product**: 终端 Coding Agent CLI + SDK（[pi.dev](https://pi.dev)）
+- **Fork 跑 pi 默认**: `scripts/pi-learn.ps1` / `scripts/pi-learn.sh`（内置 `-nc`，不自动加载本文件与 `CLAUDE.md`）
 
 下文 **Development Rules** 等为上游维护的协作/开发规则； harness **法** 层见 `CLAUDE.md`，**设** 层见 `DESIGN.md`。
 
