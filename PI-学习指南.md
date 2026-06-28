@@ -347,8 +347,9 @@ npm run build
 **默认（推荐学习 pi 内核）：**
 
 ```powershell
-.\scripts\pi-learn.ps1 -p "Explain agent-loop.ts briefly"
-.\scripts\pi-learn.ps1              # 交互 TUI，同样 -nc
+# PowerShell 需在 pi 参数前加 --，否则 -p 会被 PS 自己解析
+.\scripts\pi-learn.ps1 -- -p "Explain agent-loop.ts briefly"
+.\scripts\pi-learn.ps1 --          # 交互 TUI，同样 -nc
 ```
 
 ```bash
@@ -358,8 +359,15 @@ npm run build
 **需要加载 fork 协作规则时（显式 opt-in）：**
 
 ```powershell
-.\scripts\pi-learn.ps1 -WithContext -p "按 CLAUDE.md 协作规范回答"
-.\pi-test.sh -p "..."               # 等价于不用 -nc
+.\scripts\pi-learn.ps1 -WithContext -- -p "按 CLAUDE.md 协作规范回答"
+.\pi-test.sh -p "..."               # 等价于不用 -nc（Git Bash）
+```
+
+验证 `-nc` 是否生效（无需 API Key）：
+
+```powershell
+node node_modules/tsx/dist/cli.mjs scripts/verify-pi-learn-nc.mjs
+# 末尾应输出 VERIFY_OK
 ```
 
 **说明：**
