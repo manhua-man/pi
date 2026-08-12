@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { ActionInfo } from "../../src/harness/agent-harness.ts";
 import { type LaneReductionInput, type LaneState, reduceLaneState, validateRecordLog } from "../../src/harness/reducer.ts";
 import type {
+	CompactionEntry,
 	Entry,
 	EffectiveLaneConfiguration,
 	LaneRecord,
@@ -14,6 +15,7 @@ import type {
 	RecordLogSlice,
 	StepAttemptRecord,
 	ToolStartedRecord,
+	UsageRecord,
 	WriteDeferredRecord,
 } from "../../src/harness/session/types.ts";
 
@@ -127,8 +129,16 @@ function runStarted(seq: number, id = "run-1"): OperationStartedRecord {
 	};
 }
 
-function attempt(seq: number, runId: string, step: StepAttemptRecord["step"], attemptNumber: number, resultEntryId: string): StepAttemptRecord {
-	return { type: "step_attempt", id: `attempt-${seq}`, lane: "main", seq, timestamp: seq, runId, step, attempt: attemptNumber, resultEntryId };
+function attempt(
+	seq: number,
+	runId: string,
+	step: StepAttemptRecord["step"],
+	attemptNumber: number,
+	resultEntryId: string,
+	compactionReason?: "manual" | "threshold" | "overflow",
+): StepAttemptRecord {
+	const base = { type: "step_attempt", id: `attempt-${seq}`, lane: "main", seq, timestamp: seq, runId, step, attempt: attemptNumber, resultEntryId };
+	return step === "compaction" ? { ...base, compactionReason: compactionReason ?? "manual" } : { ...base };
 }
 
 function toolStarted(seq: number, assistantEntryId: string, toolIndex: number, toolCallId: string, toolName: string, resultEntryId: string): ToolStartedRecord {
@@ -160,6 +170,25 @@ function writeDeferred(seq: number, target: ProvisionedEntry): WriteDeferredReco
 
 function operationFinished(seq: number, runId = "run-1", outcome: OperationFinishedRecord["outcome"] = "completed"): OperationFinishedRecord {
 	return { type: "operation_finished", id: `finish-${seq}`, lane: "main", seq, timestamp: seq, runId, outcome };
+}
+
+function usageRecord(seq: number, resultEntryId: string, stopReason: "length" | "error" = "length", attemptNumber = 1): UsageRecord {
+	return {
+		type: "usage",
+		id: `usage-${seq}`,
+		lane: "main",
+		seq,
+		timestamp: seq,
+		runId: "run-1",
+		usage,
+		attempt: attemptNumber,
+		entryId: resultEntryId,
+		stopReason,
+	};
+}
+
+function compactionEntry(id: string, seq: number): CompactionEntry {
+	return { type: "compaction", id, parentId: null, seq, timestamp: seq, summary: "summary", retainedTail: [], tokensBefore: 10 };
 }
 
 function recoverySlice(records: readonly LaneRecord[], entries: readonly Entry[] = []): RecordLogSlice {
@@ -297,5 +326,94 @@ describe("manual-drive demo: lane state advances record by record", () => {
 		expect(actionLog[2]).toEqual({ kind: "stream_assistant", step: "assistant", attempt: 1 });
 		expect(actionLog[3]).toEqual({ kind: "consume_queue_item", queue: "steer", entryId: "steer-1" });
 		expect(actionLog[4]).toBeUndefined(); // idle
+	});
+
+	it("reconstructs the overflow recovery path (length stop -> compaction -> retry)", () => {
+		// Real overflow sequence from reducer.test.ts "overflow compaction and retry":
+		// assistant reply hit the token limit -> usage records "length" -> a
+		// compaction step is issued with reason "overflow" -> after its result
+		// lands, the assistant retries and this time fits.
+		const steps: { label: string; records: LaneRecord[]; entries: Entry[] }[] = [];
+
+		const overflowAssistant = persistedEntry(
+			messageTarget("discarded-overflow", assistantWithToolCall([{ type: "text", text: "long truncated reply" }])),
+			2,
+		);
+		const overflowSummary = compactionEntry("overflow-compaction", 5);
+		const retriedAssistant = persistedEntry(messageTarget("assistant-after-compaction", assistantWithToolCall([{ type: "text", text: "fits" }])), 7);
+
+		steps.push({
+			label: "1. assistant reply hit token limit",
+			records: [runStarted(1), attempt(2, "run-1", "assistant", 1, "discarded-overflow"), usageRecord(3, "discarded-overflow", "length")],
+			entries: [overflowAssistant],
+		});
+		steps.push({
+			label: "2. overflow compaction issued (reason=overflow)",
+			records: [
+				runStarted(1),
+				attempt(2, "run-1", "assistant", 1, "discarded-overflow"),
+				usageRecord(3, "discarded-overflow", "length"),
+				attempt(4, "run-1", "compaction", 1, "overflow-compaction", "overflow"),
+			],
+			entries: [overflowAssistant],
+		});
+		steps.push({
+			label: "3. compaction result persisted",
+			records: [
+				runStarted(1),
+				attempt(2, "run-1", "assistant", 1, "discarded-overflow"),
+				usageRecord(3, "discarded-overflow", "length"),
+				attempt(4, "run-1", "compaction", 1, "overflow-compaction", "overflow"),
+			],
+			entries: [overflowAssistant, overflowSummary],
+		});
+		steps.push({
+			label: "4. assistant retried and completed",
+			records: [
+				runStarted(1),
+				attempt(2, "run-1", "assistant", 1, "discarded-overflow"),
+				usageRecord(3, "discarded-overflow", "length"),
+				attempt(4, "run-1", "compaction", 1, "overflow-compaction", "overflow"),
+				attempt(6, "run-1", "assistant", 1, "assistant-after-compaction"),
+			],
+			entries: [overflowAssistant, overflowSummary, retriedAssistant],
+		});
+
+		const log: string[] = [];
+		const actionLog: (ActionInfo | undefined)[] = [];
+		let overflowRecoveryUsed: boolean | undefined;
+		for (const step of steps) {
+			const input = reductionInput(step.records, step.entries);
+			expect(() => validateRecordLog(input)).not.toThrow();
+			const result = reduceLaneState(input);
+			const op = result.laneState.operation;
+			overflowRecoveryUsed = op?.overflowRecoveryUsed;
+			const summary = op
+				? `operation=${op.kind}(${op.id}) step=${op.step ? `${op.step.kind}#${op.step.attempts}` : "none"} overflowRecovery=${op.overflowRecoveryUsed}`
+				: "idle";
+			const nextAction = deriveNextAction(result.laneState);
+			log.push(`[${step.label}] -> ${summary}`);
+			actionLog.push(nextAction);
+			console.log(`[${step.label}] -> ${summary}`);
+			console.log(`   peekAction -> ${nextAction ? JSON.stringify(nextAction) : "undefined (idle)"}`);
+		}
+
+		// The overflow flag flips on once the overflow compaction attempt is seen
+		// (reducer.ts:587-593), and stays set through the retried assistant step.
+		expect(log).toHaveLength(4);
+		expect(overflowRecoveryUsed).toBe(true);
+
+		// Derived actions, matched against the reducer's real semantics:
+		// 1. assistant reply was already persisted (attempt settled -> step=null),
+		//    so the next action is to retry the assistant generation.
+		// 2. the overflow compaction attempt is in flight (step=compaction#1,
+		//    overflowRecovery=true) -> place its result entry.
+		// 3. compaction result landed (step=null) -> retry the assistant.
+		// 4. retried assistant completed -> next generation continues.
+		expect(actionLog).toHaveLength(4);
+		expect(actionLog[0]).toEqual({ kind: "stream_assistant", step: "assistant", attempt: 1 });
+		expect(actionLog[1]).toEqual({ kind: "append_entry", entryType: "compaction", entryId: "overflow-compaction" });
+		expect(actionLog[2]).toEqual({ kind: "stream_assistant", step: "assistant", attempt: 1 });
+		expect(actionLog[3]).toEqual({ kind: "stream_assistant", step: "assistant", attempt: 1 });
 	});
 });
