@@ -319,16 +319,170 @@ boundaryStart ──── turnStartIndex ──── cutIndex ──── bou
 
 ---
 
-## 9. 配置与上下文
+## 9. Agent 循环与自动压缩触发
 
-### 8.1 设置层级
+> 🔧 源码归纳 · 双层 agent 循环（低层 `packages/agent/src/agent-loop.ts` + 高层封装 `packages/agent/src/harness/agent-harness.ts`），自动压缩触发在产品层 `packages/coding-agent/src/core/agent-session.ts`。基于上游基线 73414d08b。
+
+### 9.1 双层循环架构
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  AgentHarness（高层封装：会话持久化 / 队列 / 钩子 / 重试 / 压缩） │
+│                                                               │
+│  prompt() steer() followUp() nextTurn() compact() navigateTree() │
+└──────────────┬──────────────────────────────────────────────┘
+               │ runAgentLoop(messages, context, config, emit, signal)
+┌──────────────▼──────────────────────────────────────────────┐
+│  runLoop（低层循环：LLM ↔ 工具 的双层 while）                     │
+│                                                               │
+│  外层 while(有 follow-up) ───────────────────────────────┐    │
+│    ┌──────────────────────────────────────────────────┐  │    │
+│    │ 内层 while(有工具调用 或 有 steering 消息)          │  │    │
+│    │                                                   │  │    │
+│    │  LLM 回复 ──→ 有工具调用? ──→ 执行工具 ──→ 结果回喂  │──┘    │
+│    │      ↑                              │                  │    │
+│    │      └──────── 继续下一轮 ◄──────────┘                  │    │
+│    └──────────────────────────────────────────────────┘      │
+└──────────────┬──────────────────────────────────────────────┘
+               │ streamFn（模型流式调用）
+┌──────────────▼──────────────────────────────────────────────┐
+│  Models.streamSimple（pi-ai：统一多 provider + 重试 + 钩子）   │
+└─────────────────────────────────────────────────────────────┘
+```
+
+源码：`agent-loop.ts:155` `runLoop` 外层 while；`agent-loop.ts:174` 内层 while。
+
+### 9.2 单轮时序（一次 LLM 调用 + 工具执行）
+
+```
+   ┌─ messages（context 快照）
+   │
+   ▼
+┌────────────┐     transformContext ──→ convertToLlm
+│ stream LLM │  （AgentMessage级裁剪）  （转 LLM 协议格式）
+│  回复      │
+└─────┬──────┘
+      │ 流式事件: text/thinking/toolcall deltas
+      │   │
+      │   ▼  逐段 emit message_update → 实时推给 UI
+      │
+      ▼
+ assistant 消息完成
+      │
+      ├─ stopReason === "length" ?
+      │      └─ YES → 所有工具调用标错，回喂模型重新发起
+      │
+      ├─ 有 toolCall ?  ── NO → 本轮结束
+      │      │
+      │      ▼
+      │  executeToolCalls
+      │      ├─ 任一工具 sequential → 顺序执行
+      │      └─ 否则 → preflight 校验参数，然后并行执行
+      │              │
+      │              ▼  每个工具: execute() → tool_execution_end
+      │              │
+      │              ▼  ToolResultMessage 回喂 context（含错误也回喂）
+      │
+      ▼
+ turn_end ──→ prepareNextTurn（重建 state：可换模型/换thinking）
+   │
+   ├─ shouldStopAfterTurn ? → YES → agent_end
+   ├─ 有 steering 消息?      → 注入，下一轮
+   └─ 内层退出 → 有 follow-up ? → YES → 外层 continue
+```
+
+源码：`agent-loop.ts:193` `streamAssistantResponse`；`agent-loop.ts:411` `executeToolCalls`；`agent-loop.ts:224-257` turn_end → prepareNextTurn → shouldStopAfterTurn。
+
+### 9.3 工具调用（parallel 分支细节）
+
+```
+toolCalls [t1, t2, t3]
+      │
+      ├─ preflight（顺序，可被 block/校验失败）:
+      │      prepareArguments → schema 校验 → beforeToolCall 钩子
+      │      │
+      │      ▼ 全部通过
+      ├─ 并行执行:
+      │      execute(t1)  ╭─ 并发 ─╮
+      │      execute(t2)  ├────────┤
+      │      execute(t3)  ╰────────╯
+      │              │
+      │              ▼
+      │  tool_execution_end 按完成顺序 emit
+      │
+      ▼
+ 按 assistant 原始顺序生成 ToolResultMessage
+      │
+      ▼
+ 全部标 terminate:true 才停整个批（shouldTerminateToolBatch）
+```
+
+源码：`agent-loop.ts:489` `executeToolCallsParallel`；`agent-loop.ts:582` `shouldTerminateToolBatch`。
+
+### 9.4 设计要点（为什么这样能行）
+
+1. **失败是消息，不是异常**——工具抛错被吞掉，转成 error `ToolResultMessage` 回喂模型（`agent-loop.ts:756`），循环只保证错误回到模型眼前，让模型自己纠错。
+2. **一切皆数据，一切皆可恢复**——消息/事件/工具结果全是普通数据；`handleAgentEvent` 每个 `message_end` 落盘 JSONL，崩溃可重建。
+3. **双层循环分离"处理中"与"待处理"**——steering（运行中插话）和 follow-up（运行后追问）语义不同，两个循环各答一个问题。
+4. **事件流是"推"不是"等"**——低层循环对 UI 无知，只 emit 事件；TUI 跟事件流实时渲染，慢 LLM 不阻塞 UI。
+
+### 9.5 Compaction 在循环里的触发（当前产品层）
+
+自动压缩**不在低层循环内**，而是挂在 coding-agent 层的两个触发点：
+
+```
+ agent 低层循环（agent-loop.ts）            coding-agent 层（agent-session.ts）
+─────────────────────────────            ────────────────────────────────
+ LLM 回复返回
+   │
+   ▼
+ stopReason === "error"?  ←── context overflow ──────┐
+   │                                                  │
+   ▼                                                  ▼
+ agent_end 事件 ──→  _handleAgentEnd (L1096)       ┌─ 触发点①: agent_end 之后
+                        │                           │   _checkCompaction(msg)：
+                        │                           │   - overflow  → compact + auto-retry
+                        │                           │   - threshold → compact，不重试
+                        ▼                           └──────────┬──────────────
+                                          触发点②: 下一条 prompt 发送前 (L1201)
+                                           _checkCompaction(lastAssistant, false)
+                                           （捕捉上次被 abort 的响应）
+```
+
+检查流程（`agent-session.ts:1953` `_checkCompaction`）：
+
+```
+_checkCompaction(assistantMessage)
+   ├─ settings.enabled=false ─→ return false
+   ├─ 消息被 abort? 且 skipAbortedCheck ─→ return false
+   ├─ 消息比最近 compaction 还旧? ─→ return false（防重复触发）
+   ├─ Case 1: isContextOverflow(msg, contextWindow)？
+   │     ├─ 已完成回复(stop) ─→ compact("overflow", 不重试)
+   │     └─ 未完成 ─→ 若已重试过→放弃；否则：
+   │          从 agent.state 移除最后 error 消息（已存 session 不进 context）
+   │          → compact("overflow", willRetry=true) → agent.continue() 自动重试
+   └─ Case 2: shouldCompact(contextTokens, contextWindow, settings)
+         contextTokens > contextWindow − reserveTokens(16384)
+         error/零 usage 时从历史估算（保证 529/格式错误也能压缩）
+         → compact("threshold", 不重试)  ← 用户手动继续
+```
+
+**防重复触发保护**（`agent-session.ts:1972`）：取 `getLatestCompactionEntry`，若该 assistant 消息时间戳 ≤ compaction entry 时间戳 → 跳过，防止压缩后残留旧 usage 二次触发。
+
+**双实现提醒**（呼应 §8）：`AgentHarness.compact()`（`agent-harness.ts:783`）是 harness v2 层的显式压缩；上述自动触发是 coding-agent 产品层，尚未迁到 harness——§8.4 迁移清单第 1-4 条即对齐此差异。
+
+---
+
+## 10. 配置与上下文
+
+### 10.1 设置层级
 
 | 位置 | 作用域 |
 |------|--------|
 | `~/.pi/agent/settings.json` | 全局 |
 | `.pi/settings.json` | 项目（覆盖全局） |
 
-### 8.2 上下文文件
+### 10.2 上下文文件
 
 启动时自动加载 `AGENTS.md` / `CLAUDE.md`：
 
@@ -338,13 +492,13 @@ boundaryStart ──── turnStartIndex ──── cutIndex ──── bou
 
 系统提示词：`.pi/SYSTEM.md`（项目）或 `~/.pi/agent/SYSTEM.md`（全局）
 
-### 8.3 项目信任（Project Trust）
+### 10.3 项目信任（Project Trust）
 
 交互模式下，含 `.pi/` 或项目 Skills 的目录会提示是否信任。信任后才加载项目级 Extension 和设置。非交互模式用 `--approve` / `--no-approve` 覆盖。
 
 ---
 
-## 10. Provider 与模型
+## 11. Provider 与模型
 
 `pi-ai` 统一对接 30+ Provider，支持：
 
@@ -357,7 +511,7 @@ boundaryStart ──── turnStartIndex ──── cutIndex ──── bou
 
 ---
 
-## 11. 与 Claude Code / Cursor 对比
+## 12. 与 Claude Code / Cursor 对比
 
 | 维度 | Pi | Claude Code / Cursor |
 |------|----|-----------------------|
@@ -372,14 +526,14 @@ boundaryStart ──── turnStartIndex ──── cutIndex ──── bou
 
 ---
 
-## 12. 本地开发与环境
+## 13. 本地开发与环境
 
-### 11.1 环境要求
+### 13.1 环境要求
 
 - Node.js >= 22.19.0
 - 仓库根目录：`F:\AIInfra\pi`
 
-### 11.2 从源码构建
+### 13.2 从源码构建
 
 ```powershell
 cd F:\AIInfra\pi
@@ -388,7 +542,7 @@ npm run build
 .\scripts\pi-learn.ps1    # fork 默认：带 -nc，不自动加载 AGENTS/CLAUDE
 ```
 
-### 11.5 Fork 默认：`-nc`（不加载上下文文件）
+### 13.5 Fork 默认：`-nc`（不加载上下文文件）
 
 本 fork 在 `AGENTS.md` / `CLAUDE.md` 上叠了 harness 事/法/设。为避免 pi 运行时**自动注入**这些协作规则、干扰「读源码学架构」，**默认用 `-nc`**。
 
@@ -429,14 +583,14 @@ node node_modules/tsx/dist/cli.mjs scripts/verify-pi-learn-nc.mjs
 - `DESIGN.md` 本就不会被 pi 自动加载；需要时让 agent `read` 或你在 Cursor 里 @ 引用。
 - 全局安装的 `pi` 命令：在 fork 目录下手动加 `-nc`，或用上述包装脚本。
 
-### 11.3 测试
+### 13.3 测试
 
 ```powershell
 .\test.sh             # 不需要 API Key 的非 LLM 测试
 npm test              # 全量测试（部分需 API Key）
 ```
 
-### 11.4 安装使用（非源码）
+### 13.4 安装使用（非源码）
 
 ```bash
 npm install -g --ignore-scripts @earendil-works/pi-coding-agent
@@ -448,7 +602,7 @@ Windows 专项：`packages/coding-agent/docs/windows.md`
 
 ---
 
-## 13. 推荐学习路径（由浅入深）
+## 14. 推荐学习路径（由浅入深）
 
 ### 阶段 1：跑起来，感受产品
 
@@ -491,7 +645,7 @@ Windows 专项：`packages/coding-agent/docs/windows.md`
 
 ---
 
-## 14. 文档索引（仓库内）
+## 15. 文档索引（仓库内）
 
 | 文档 | 路径 |
 |------|------|
@@ -510,7 +664,7 @@ Windows 专项：`packages/coding-agent/docs/windows.md`
 
 ---
 
-## 15. 安全提示
+## 16. 安全提示
 
 - Pi **无内置权限系统**，以启动用户权限运行
 - Extension 和 Pi Package 拥有**完整系统访问权**，安装第三方包前务必审源码
@@ -518,7 +672,7 @@ Windows 专项：`packages/coding-agent/docs/windows.md`
 
 ---
 
-## 16. 延伸阅读
+## 17. 延伸阅读
 
 - [pi.dev 文档](https://pi.dev/docs/latest)
 - [Pi Coding Agent 博客](https://mariozechner.at/posts/2025-11-30-pi-coding-agent/)
@@ -527,4 +681,4 @@ Windows 专项：`packages/coding-agent/docs/windows.md`
 
 ---
 
-*文档更新：2026-03-14 · 基于 pi 上游 73414d08b · §2 出处标注 + §5 源码推导流程图 + §8 Compaction 双实现深入*
+*文档更新：2026-08-12 · 基于 pi 上游 73414d08b · §2 出处标注 + §5 源码推导流程图 + §8 Compaction 双实现深入 + §9 Agent 循环与自动压缩触发（新增，含 4 图）*
