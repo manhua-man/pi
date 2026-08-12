@@ -15,6 +15,9 @@ packages/ai/src/providers/.model-generation-*/
 # Environment
 .env
 
+# Harness run artifacts (local init only)
+.harness/
+
 # Editor files
 .vscode/
 .zed/
