@@ -309,13 +309,15 @@ boundaryStart ──── turnStartIndex ──── cutIndex ──── bou
 
 ### 8.4 迁移对齐清单（产品层迁 harness v2 时）
 
-1. cut 点 token 累计口径统一为所有 context 消息
-2. custom role 的 turn-start 判定统一
-3. agent 包补空摘要守卫
-4. coding-agent 补 aborted 语义（中止时抛错而非空文本）
-5. retainedTail / firstKeptEntryId 双路径兼容验证（旧 session 无损迁移）
+> ⏱ 2026-08-12 对照上游同步后的复查结果（基线 73414d08b → 2e4d23959，309 commits）
 
-> 对应 canvas：`~/.cursor/projects/f-AIInfra-pi/canvases/compaction-dual-impl-v1.canvas.tsx` · 上游基线 73414d08b
+1. cut 点 token 累计口径统一为所有 context 消息 —— ✅ **上游已统一**（`packages/agent/src/harness/compaction/compaction.ts`：`calculateTotalContextTokens` / `estimateContextTokens` 统一覆盖所有 context 消息）
+2. custom role 的 turn-start 判定统一 —— ⚠️ **未迁移**（双实现各自仍有独立判定）
+3. agent 包补空摘要守卫 —— ⚠️ **未迁移**（agent 侧仍以 `undefined` 表示不适用，见 `compaction.ts` `prepareCompaction`）
+4. coding-agent 补 aborted 语义 —— 🔄 **方向反转**：agent 侧已是 `Result<T,E>` + `CompactionError("aborted")` 显式处理（`compaction.ts` `summarize`）；现在轮到 coding-agent 向 agent 的 Result 风格对齐
+5. retainedTail / firstKeptEntryId 双路径兼容验证 —— ✅ **已被新存储层超越**（`packages/storage/` 重命名为 `packages/session-backends/`，JSONL atomic writes、SQLite 每会话单文件 + 模板查询，见提交 `a838c069e` / `055ecce08` / `2bb7ba496`）
+
+> 对应 canvas：`~/.cursor/projects/f-AIInfra-pi/canvases/compaction-dual-impl-v1.canvas.tsx` · 基线更新：上游已同步至 2e4d23959，harness-v3 骨架已出现（提交 7a6a1c2db）
 
 ---
 
