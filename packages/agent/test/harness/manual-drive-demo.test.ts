@@ -1,6 +1,7 @@
 import type { AssistantMessage, ToolResultMessage, Usage, UserMessage } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
-import { type LaneReductionInput, reduceLaneState, validateRecordLog } from "../../src/harness/reducer.ts";
+import type { ActionInfo } from "../../src/harness/agent-harness.ts";
+import { type LaneReductionInput, type LaneState, reduceLaneState, validateRecordLog } from "../../src/harness/reducer.ts";
 import type {
 	Entry,
 	EffectiveLaneConfiguration,
@@ -25,6 +26,60 @@ import type {
  * feeds records one at a time (the way manual drive would commit then peek)
  * and prints how the lane state advances.
  */
+
+/**
+ * Concept demo of the peekAction logic: derive the next ActionInfo from a
+ * reconstructed LaneState. This mirrors the priority order harness.md §4.1
+ * gives the real nextAction planning: abort -> queues -> deferred writes ->
+ * missing inputs -> in-flight step result -> tool batch -> next generation.
+ */
+function deriveNextAction(state: LaneState): ActionInfo | undefined {
+	const op = state.operation;
+	if (!op) return undefined; // idle: acceptance is external
+
+	if (op.aborting) return { kind: "finish_operation", outcome: "aborted" };
+
+	if (op.pendingSteer.length > 0) {
+		return { kind: "consume_queue_item", queue: "steer", entryId: op.pendingSteer[0]!.id };
+	}
+	if (op.pendingFollowUp.length > 0) {
+		return { kind: "consume_queue_item", queue: "followUp", entryId: op.pendingFollowUp[0]!.id };
+	}
+	if (op.pendingWrites.length > 0) {
+		return { kind: "apply_pending_write", entryId: op.pendingWrites[0]!.id };
+	}
+	if (op.missingInitialMessages.length > 0) {
+		const target = op.missingInitialMessages[0]!;
+		return { kind: "append_entry", entryType: target.type, entryId: target.id };
+	}
+
+	// A step in flight whose result entry has not landed yet: place the result.
+	if (op.step) {
+		const entryType: ActionInfo & { kind: "append_entry" } = (() => {
+			switch (op.step!.kind) {
+				case "assistant":
+					return { kind: "append_entry", entryType: "message", entryId: op.step!.resultEntryId };
+				case "compaction":
+					return { kind: "append_entry", entryType: "compaction", entryId: op.step!.resultEntryId };
+				case "branch_summary":
+					return { kind: "append_entry", entryType: "branch_summary", entryId: op.step!.resultEntryId };
+			}
+		})();
+		return entryType;
+	}
+
+	// Tool batch: execute the first unresolved call.
+	if (op.toolBatch) {
+		const call = op.toolBatch.calls.find((candidate) => !candidate.resultExists);
+		if (call) return { kind: "execute_tool", toolCallId: call.toolCall.id, toolName: call.toolCall.name };
+		if (op.toolBatch.truncated) return { kind: "try_finish_run", outcome: "failed" };
+	}
+
+	// No in-flight step, no tool work: start the next generation.
+	if (op.kind === "run") return { kind: "stream_assistant", step: "assistant", attempt: 1 };
+
+	return { kind: "finish_operation", outcome: "completed" };
+}
 
 const usage: Usage = {
 	input: 1,
@@ -201,6 +256,7 @@ describe("manual-drive demo: lane state advances record by record", () => {
 		});
 
 		const log: string[] = [];
+		const actionLog: (ActionInfo | undefined)[] = [];
 		for (const step of steps) {
 			const input = reductionInput(step.records, step.entries);
 			// Validation must pass for a legal prefix:
@@ -210,8 +266,11 @@ describe("manual-drive demo: lane state advances record by record", () => {
 			const summary = op
 				? `operation=${op.kind}(${op.id}) aborted=${op.aborting} step=${op.step ? `${op.step.kind}#${op.step.attempts}` : "none"} toolBatch=${op.toolBatch ? (op.toolBatch.unresolved ? "UNRESOLVED" : "resolved") : "none"} steerPending=${op.pendingSteer.length} followUpPending=${op.pendingFollowUp.length} writesPending=${op.pendingWrites.length} leaf=${result.laneState.leafId}`
 				: `idle leaf=${result.laneState.leafId} nextRunPending=${result.laneState.pendingNextRun.length}`;
+			const nextAction = deriveNextAction(result.laneState);
 			log.push(`[${step.label}] -> ${summary}`);
+			actionLog.push(nextAction);
 			console.log(`[${step.label}] -> ${summary}`);
+			console.log(`   peekAction -> ${nextAction ? JSON.stringify(nextAction) : "undefined (idle, waiting for external acceptance)"}`);
 		}
 
 		// A manual-drive caller would peek exactly these state fields each step.
@@ -228,5 +287,15 @@ describe("manual-drive demo: lane state advances record by record", () => {
 		expect(log[3]).toContain("steerPending=1");
 		// Step 5: operation finished -> lane idle, next-run queue empty.
 		expect(log[4]).toContain("idle");
+
+		// The derived peekAction sequence is the manual drive's step-by-step plan:
+		// run accepted -> tool start pending -> execute tool -> (after tool resolves)
+		// next generation would start, but steer preempts -> finish.
+		expect(actionLog).toHaveLength(5);
+		expect(actionLog[0]).toEqual({ kind: "execute_tool", toolCallId: "call-1", toolName: "read" });
+		expect(actionLog[1]).toEqual({ kind: "execute_tool", toolCallId: "call-1", toolName: "read" });
+		expect(actionLog[2]).toEqual({ kind: "stream_assistant", step: "assistant", attempt: 1 });
+		expect(actionLog[3]).toEqual({ kind: "consume_queue_item", queue: "steer", entryId: "steer-1" });
+		expect(actionLog[4]).toBeUndefined(); // idle
 	});
 });
